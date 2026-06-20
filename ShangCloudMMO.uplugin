@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0.0",
+	"FriendlyName": "ShangCloud MMO SDK",
+	"Description": "ShangCloud MMO real-time communication SDK with AES-256-GCM encrypted TCP/UDP/WebSocket transport and HTTP API client.",
+	"Category": "Networking",
+	"CreatedBy": "YearnStudio",
+	"CreatedByURL": "https://yearnstudio.cn",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "ShangCloudMMO",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

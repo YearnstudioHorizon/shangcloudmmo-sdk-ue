@@ -65,6 +65,9 @@ void AMyActor::BeginPlay()
     // 注册事件
     MmoComponent->OnConnected.AddDynamic(this, &AMyActor::OnMmoConnected);
     MmoComponent->OnMessageReceived.AddDynamic(this, &AMyActor::OnMmoMessage);
+    MmoComponent->OnBroadcastReceived.AddDynamic(this, &AMyActor::OnMmoBroadcast);
+    MmoComponent->OnSyncVarReceived.AddDynamic(this, &AMyActor::OnMmoSyncVar);
+    MmoComponent->OnSyncVarInterpolated.AddDynamic(this, &AMyActor::OnMmoSyncVarInterpolated);
     MmoComponent->OnUserJoined.AddDynamic(this, &AMyActor::OnMmoUserJoined);
     MmoComponent->OnUserLeft.AddDynamic(this, &AMyActor::OnMmoUserLeft);
     MmoComponent->OnConnectionError.AddDynamic(this, &AMyActor::OnMmoError);
@@ -100,7 +103,17 @@ void AMyActor::OnRoomCreated(const FMmoNewRoomResponse& Response, const FString&
 void AMyActor::OnMmoConnected()
 {
     UE_LOG(LogTemp, Log, TEXT("Connected to edge!"));
-    MmoComponent->SendMessage(TEXT("{\"type\":\"__join__\",\"uid\":\"player1\",\"nickname\":\"Player One\"}"));
+    // 封装版加入通知（等价于手写 __join__ JSON）
+    MmoComponent->SendJoinAnnouncement(TEXT("player1"), TEXT("Player One"));
+
+    // 封装版广播消息（wire：{"uid","message","extra"}，无 type 字段）
+    MmoComponent->SendBroadcast(TEXT("player1"), TEXT("Hello World"), TEXT(""));
+
+    // 封装版同步变量（wire：{"type":"__sync_var__","uid","vars","interp"}）
+    TMap<FString, FString> Vars;
+    Vars.Add(TEXT("x"), FString::SanitizeFloat(GetActorLocation().X));
+    Vars.Add(TEXT("y"), FString::SanitizeFloat(GetActorLocation().Y));
+    MmoComponent->SendSyncVar(TEXT("player1"), Vars, { TEXT("x"), TEXT("y") });
 }
 ```
 
@@ -170,6 +183,16 @@ ApiClient->DeleteRoomData(RoomId, TEXT("score"), OnSimpleCallback);
 
 `Error` 为空字符串表示成功。
 
+### 同步变量负载结构
+
+`OnSyncVarReceived` 的参数为 `FMmoSyncVarPayload`（USTRUCT，蓝图可用）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `Uid` | `FString` | 发送方 UID |
+| `Vars` | `TMap<FString,FString>` | 变量名→值（值统一为字符串，与 core.js 一致） |
+| `Interp` | `TArray<FString>` | 需要接收端插帧平滑的变量名列表 |
+
 ## ShangCloudMmoComponent
 
 `UShangCloudMmoComponent` 是一个 `UActorComponent`，可添加到任意 Actor。
@@ -192,8 +215,11 @@ ApiClient->DeleteRoomData(RoomId, TEXT("score"), OnSimpleCallback);
 | `OnConnected` | 无 | 连接成功 |
 | `OnDisconnected` | 无 | 连接断开 |
 | `OnConnectionError` | `Error` | 连接错误 |
-| `OnMessageReceived` | `Message` | 收到业务消息 |
+| `OnMessageReceived` | `Message` | 收到未识别为广播/同步变量的业务消息 |
 | `OnRawMessageReceived` | `Data` | 收到二进制消息 |
+| `OnBroadcastReceived` | `Uid`, `Message`, `Extra` | 收到广播消息（wire：`{"uid","message","extra"}`） |
+| `OnSyncVarReceived` | `Payload (FMmoSyncVarPayload)` | 收到同步变量（wire：`__sync_var__`），含 `Uid`/`Vars`/`Interp` |
+| `OnSyncVarInterpolated` | `Uid`, `VarName`, `Value` | 插帧引擎逐帧推进时触发，回写场景对象即可（移植自 core.js 的 `_ensureInterpLoop`） |
 | `OnUserJoined` | `Uid`, `Nickname` | 用户加入 |
 | `OnUserLeft` | `Uid` | 用户离开 |
 | `OnServerClosed` | 无 | 服务端关闭连接 |
@@ -205,8 +231,14 @@ ApiClient->DeleteRoomData(RoomId, TEXT("score"), OnSimpleCallback);
 | `ConfigureFromApiResponse(ConnectKey, EdgeUrl, Protocol)` | 从 API 响应配置参数 |
 | `ConnectToEdge()` | 连接边缘节点 |
 | `DisconnectFromEdge()` | 断开连接 |
-| `SendMessage(FString)` | 发送文本消息 |
+| `SendMessage(FString)` | 发送原始文本消息（明文帧，不经过封装） |
 | `SendRaw(TArray<uint8>)` | 发送二进制数据 |
+| `SendBroadcast(Uid, Message, Extra)` | 封装广播，wire：`{"uid","message","extra"}` |
+| `SendSyncVar(Uid, Vars, Interp)` | 封装同步变量，wire：`{"type":"__sync_var__","uid","vars","interp"}` |
+| `SendJoinAnnouncement(Uid, Nickname)` | 封装加入通知，wire：`{"type":"__join__","uid","nickname"}` |
+| `GetSyncVar(Uid, VarName) -> double` | 读取插帧变量平滑后的当前值（移植自 core.js 的插帧引擎） |
+| `GetSyncVarRaw(Uid, VarName) -> FString` | 读取同步变量原始值（不做插帧） |
+| `ClearSyncVarState(Uid)` | 清理指定 uid 的插帧状态（玩家离开时调用） |
 
 ## 通信协议
 

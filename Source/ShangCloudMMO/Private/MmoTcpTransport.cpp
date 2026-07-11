@@ -4,6 +4,32 @@
 #include "Sockets.h"
 #include "SocketSubsystem.h"
 #include "IPAddress.h"
+#include "HAL/PlatformProcess.h"
+
+class FMmoTcpHeartbeatRunnable : public FRunnable
+{
+public:
+	explicit FMmoTcpHeartbeatRunnable(FMmoTcpTransport* InOwner)
+		: Owner(InOwner)
+	{
+	}
+
+	virtual uint32 Run() override
+	{
+		return Owner ? Owner->HeartbeatRun() : 0;
+	}
+
+	virtual void Stop() override
+	{
+		if (Owner)
+		{
+			Owner->Stop();
+		}
+	}
+
+private:
+	FMmoTcpTransport* Owner = nullptr;
+};
 
 FMmoTcpTransport::~FMmoTcpTransport()
 {
@@ -22,12 +48,15 @@ void FMmoTcpTransport::Connect(const FString& Host, int32 Port, const FString& C
 	State = EMmoConnectionState::Connecting;
 
 	Thread = FRunnableThread::Create(this, TEXT("MMO-TCP-Recv"), 0, TPri_Normal);
+	HeartbeatRunnable = new FMmoTcpHeartbeatRunnable(this);
+	HeartbeatThread = FRunnableThread::Create(HeartbeatRunnable, TEXT("MMO-TCP-Heartbeat"), 0, TPri_Normal);
 }
 
 void FMmoTcpTransport::Disconnect()
 {
 	bStopping = true;
 	State = EMmoConnectionState::Disconnected;
+	StopHeartbeatThread();
 	CleanupSocket();
 
 	if (Thread)
@@ -40,15 +69,8 @@ void FMmoTcpTransport::Disconnect()
 
 void FMmoTcpTransport::Poll(float DeltaTime)
 {
-	if (State == EMmoConnectionState::Connected)
-	{
-		HeartbeatTimer += DeltaTime;
-		if (HeartbeatTimer >= HeartbeatInterval)
-		{
-			HeartbeatTimer = 0.f;
-			SendHeartbeat();
-		}
-	}
+	// TCP heartbeats are sent from a background thread so the server does
+	// not drop the connection when the component tick is paused or disabled.
 }
 
 void FMmoTcpTransport::Send(const uint8* Data, int32 Length)
@@ -216,6 +238,52 @@ bool FMmoTcpTransport::ReadExact(uint8* Buffer, int32 Count)
 		TotalRead += Read;
 	}
 	return TotalRead == Count;
+}
+
+uint32 FMmoTcpTransport::HeartbeatRun()
+{
+	float Elapsed = 0.f;
+	while (!bStopping &&
+		State != EMmoConnectionState::Disconnected &&
+		State != EMmoConnectionState::Error)
+	{
+		FPlatformProcess::Sleep(0.1f);
+		Elapsed += 0.1f;
+
+		if (bStopping ||
+			State == EMmoConnectionState::Disconnected ||
+			State == EMmoConnectionState::Error)
+		{
+			break;
+		}
+
+		if (Elapsed >= HeartbeatInterval)
+		{
+			Elapsed = 0.f;
+			if (State == EMmoConnectionState::Connected)
+			{
+				SendHeartbeat();
+			}
+		}
+	}
+
+	return 0;
+}
+
+void FMmoTcpTransport::StopHeartbeatThread()
+{
+	if (HeartbeatThread)
+	{
+		HeartbeatThread->WaitForCompletion();
+		delete HeartbeatThread;
+		HeartbeatThread = nullptr;
+	}
+
+	if (HeartbeatRunnable)
+	{
+		delete HeartbeatRunnable;
+		HeartbeatRunnable = nullptr;
+	}
 }
 
 void FMmoTcpTransport::CleanupSocket()

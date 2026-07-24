@@ -70,6 +70,7 @@ void AMyActor::BeginPlay()
     MmoComponent->OnSyncVarInterpolated.AddDynamic(this, &AMyActor::OnMmoSyncVarInterpolated);
     MmoComponent->OnUserJoined.AddDynamic(this, &AMyActor::OnMmoUserJoined);
     MmoComponent->OnUserLeft.AddDynamic(this, &AMyActor::OnMmoUserLeft);
+    MmoComponent->OnMembersUpdated.AddDynamic(this, &AMyActor::OnMmoMembersUpdated);
     MmoComponent->OnConnectionError.AddDynamic(this, &AMyActor::OnMmoError);
     MmoComponent->OnDisconnected.AddDynamic(this, &AMyActor::OnMmoDisconnected);
 
@@ -104,6 +105,7 @@ void AMyActor::OnMmoConnected()
 {
     UE_LOG(LogTemp, Log, TEXT("Connected to edge!"));
     // 封装版加入通知（等价于手写 __join__ JSON）
+    // 会自动把自己写入本地成员列表并发送 __ping__ 查询完整列表
     MmoComponent->SendJoinAnnouncement(TEXT("player1"), TEXT("Player One"));
 
     // 封装版广播消息（wire：{"uid","message","extra"}，无 type 字段）
@@ -114,6 +116,16 @@ void AMyActor::OnMmoConnected()
     Vars.Add(TEXT("x"), FString::SanitizeFloat(GetActorLocation().X));
     Vars.Add(TEXT("y"), FString::SanitizeFloat(GetActorLocation().Y));
     MmoComponent->SendSyncVar(TEXT("player1"), Vars, { TEXT("x"), TEXT("y") });
+}
+
+void AMyActor::OnMmoMembersUpdated(int32 UserCount, const TArray<FMmoRoomMember>& Members)
+{
+    // 收到 __pong__ 后触发；也可随时 MmoComponent->GetMemberList() 读取缓存
+    UE_LOG(LogTemp, Log, TEXT("Room user count=%d members=%d"), UserCount, Members.Num());
+    for (const FMmoRoomMember& M : MmoComponent->GetMemberList())
+    {
+        UE_LOG(LogTemp, Log, TEXT("  %s | %s"), *M.Uid, *M.Nickname);
+    }
 }
 ```
 
@@ -222,6 +234,7 @@ ApiClient->DeleteRoomData(RoomId, TEXT("score"), OnSimpleCallback);
 | `OnSyncVarInterpolated` | `Uid`, `VarName`, `Value` | 插帧引擎逐帧推进时触发，回写场景对象即可（移植自 core.js 的 `_ensureInterpLoop`） |
 | `OnUserJoined` | `Uid`, `Nickname` | 用户加入 |
 | `OnUserLeft` | `Uid` | 用户离开 |
+| `OnMembersUpdated` | `UserCount`, `Members (TArray<FMmoRoomMember>)` | 收到 `__pong__` 后成员列表更新 |
 | `OnServerClosed` | 无 | 服务端关闭连接 |
 
 ### 方法
@@ -235,7 +248,10 @@ ApiClient->DeleteRoomData(RoomId, TEXT("score"), OnSimpleCallback);
 | `SendRaw(TArray<uint8>)` | 发送二进制数据 |
 | `SendBroadcast(Uid, Message, Extra)` | 封装广播，wire：`{"uid","message","extra"}` |
 | `SendSyncVar(Uid, Vars, Interp)` | 封装同步变量，wire：`{"type":"__sync_var__","uid","vars","interp"}` |
-| `SendJoinAnnouncement(Uid, Nickname)` | 封装加入通知，wire：`{"type":"__join__","uid","nickname"}` |
+| `SendJoinAnnouncement(Uid, Nickname)` | 封装加入通知，wire：`{"type":"__join__","uid","nickname"}`；同时写入本地成员缓存并发送 `__ping__` |
+| `QueryMembers()` | 发送 `__ping__` 查询房间成员（服务端回 `__pong__:N:membersJSON`） |
+| `GetMemberList() -> TArray<FMmoRoomMember>` | 本地缓存的成员列表（参考扩展 getMemberList） |
+| `GetRoomUserCount() -> int32` | 最近一次 `__pong__` 的房间人数 |
 | `GetSyncVar(Uid, VarName) -> double` | 读取插帧变量平滑后的当前值（移植自 core.js 的插帧引擎） |
 | `GetSyncVarRaw(Uid, VarName) -> FString` | 读取同步变量原始值（不做插帧） |
 | `ClearSyncVarState(Uid)` | 清理指定 uid 的插帧状态（玩家离开时调用） |

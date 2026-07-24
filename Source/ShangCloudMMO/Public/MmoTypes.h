@@ -66,3 +66,19 @@ struct FMmoSyncVarPayload
 	UPROPERTY(BlueprintReadWrite, Category = "ShangCloud|MMO")
 	TArray<FString> Interp;
 };
+
+/**
+ * 房间成员信息（参考 extension getMemberList / __pong__ 成员 JSON）。
+ * wire 格式：{"uid":"...","nickname":"..."}
+ */
+USTRUCT(BlueprintType)
+struct FMmoRoomMember
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite, Category = "ShangCloud|MMO")
+	FString Uid;
+
+	UPROPERTY(BlueprintReadWrite, Category = "ShangCloud|MMO")
+	FString Nickname;
+};

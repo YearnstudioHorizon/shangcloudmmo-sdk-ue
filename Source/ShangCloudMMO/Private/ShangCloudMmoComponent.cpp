@@ -70,6 +70,7 @@ void UShangCloudMmoComponent::ConnectToEdge()
 	Transport->OnDisconnected.BindLambda([this]()
 	{
 		ConnectionState = EMmoConnectionState::Disconnected;
+		ClearMembers();
 		OnDisconnected.Broadcast();
 	});
 	Transport->OnError.BindLambda([this](const FString& Error)
@@ -107,6 +108,7 @@ void UShangCloudMmoComponent::DisconnectFromEdge()
 	}
 	ConnectionState = EMmoConnectionState::Disconnected;
 	InterpEngine.Clear();
+	ClearMembers();
 }
 
 void UShangCloudMmoComponent::SendMessage(const FString& Message)
@@ -210,6 +212,31 @@ void UShangCloudMmoComponent::SendJoinAnnouncement(const FString& Uid, const FSt
 	FJsonSerializer::Serialize(Json.ToSharedRef(), Writer);
 
 	SendMessage(Out);
+
+	// 立即将自己加入本地成员列表（参考 extension wasm，无需等待 __pong__）
+	UpsertMember(Uid, Nickname);
+	// 主动查询完整成员列表
+	QueryMembers();
+}
+
+void UShangCloudMmoComponent::QueryMembers()
+{
+	if (!Transport.IsValid() || Transport->GetState() != EMmoConnectionState::Connected)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ShangCloudMMO: cannot query members, not connected"));
+		return;
+	}
+	SendMessage(TEXT("__ping__"));
+}
+
+TArray<FMmoRoomMember> UShangCloudMmoComponent::GetMemberList() const
+{
+	return Members;
+}
+
+int32 UShangCloudMmoComponent::GetRoomUserCount() const
+{
+	return RoomUserCount > 0 ? RoomUserCount : Members.Num();
 }
 
 double UShangCloudMmoComponent::GetSyncVar(const FString& Uid, const FString& VarName) const
@@ -280,8 +307,98 @@ void UShangCloudMmoComponent::CleanupTransport()
 	}
 }
 
+void UShangCloudMmoComponent::ClearMembers()
+{
+	Members.Reset();
+	RoomUserCount = 0;
+}
+
+void UShangCloudMmoComponent::UpsertMember(const FString& Uid, const FString& Nickname)
+{
+	if (Uid.IsEmpty())
+	{
+		return;
+	}
+	for (FMmoRoomMember& Member : Members)
+	{
+		if (Member.Uid == Uid)
+		{
+			Member.Nickname = Nickname;
+			return;
+		}
+	}
+	FMmoRoomMember Entry;
+	Entry.Uid = Uid;
+	Entry.Nickname = Nickname;
+	Members.Add(Entry);
+}
+
+void UShangCloudMmoComponent::RemoveMember(const FString& Uid)
+{
+	Members.RemoveAll([&Uid](const FMmoRoomMember& Member)
+	{
+		return Member.Uid == Uid;
+	});
+}
+
+void UShangCloudMmoComponent::ApplyMembersFromPong(const FString& MembersJson, int32 Count)
+{
+	if (!MembersJson.IsEmpty() && MembersJson != TEXT("null"))
+	{
+		TArray<TSharedPtr<FJsonValue>> Arr;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(MembersJson);
+		if (FJsonSerializer::Deserialize(Reader, Arr))
+		{
+			TArray<FMmoRoomMember> Next;
+			Next.Reserve(Arr.Num());
+			for (const TSharedPtr<FJsonValue>& Item : Arr)
+			{
+				if (!Item.IsValid() || Item->Type != EJson::Object)
+				{
+					continue;
+				}
+				const TSharedPtr<FJsonObject> Obj = Item->AsObject();
+				if (!Obj.IsValid())
+				{
+					continue;
+				}
+				FMmoRoomMember Entry;
+				Obj->TryGetStringField(TEXT("uid"), Entry.Uid);
+				Obj->TryGetStringField(TEXT("nickname"), Entry.Nickname);
+				if (!Entry.Uid.IsEmpty())
+				{
+					Next.Add(Entry);
+				}
+			}
+			Members = MoveTemp(Next);
+		}
+	}
+	RoomUserCount = Count > 0 ? Count : Members.Num();
+	OnMembersUpdated.Broadcast(RoomUserCount, Members);
+}
+
 void UShangCloudMmoComponent::ProcessBusinessMessage(const FString& Message)
 {
+	// __pong__:<人数>:<成员JSON> —— 房间成员查询响应（参考 extension wasm）
+	if (Message.StartsWith(TEXT("__pong__")))
+	{
+		FString Rest = Message.Mid(8); // skip "__pong__"
+		if (Rest.StartsWith(TEXT(":")))
+		{
+			Rest.RightChopInline(1);
+		}
+		FString CountStr;
+		FString MembersJson;
+		if (!Rest.Split(TEXT(":"), &CountStr, &MembersJson))
+		{
+			CountStr = Rest;
+			MembersJson.Empty();
+		}
+		const int32 Count = FCString::Atoi(*CountStr);
+		ApplyMembersFromPong(MembersJson, Count);
+		return;
+	}
+
 	if (Message.Len() > 0 && Message[0] == TEXT('{'))
 	{
 		TSharedPtr<FJsonObject> Json;
@@ -296,6 +413,7 @@ void UShangCloudMmoComponent::ProcessBusinessMessage(const FString& Message)
 				FString Uid, Nickname;
 				Json->TryGetStringField(TEXT("uid"), Uid);
 				Json->TryGetStringField(TEXT("nickname"), Nickname);
+				UpsertMember(Uid, Nickname);
 				OnUserJoined.Broadcast(Uid, Nickname);
 				return;
 			}
@@ -303,6 +421,7 @@ void UShangCloudMmoComponent::ProcessBusinessMessage(const FString& Message)
 			{
 				FString Uid;
 				Json->TryGetStringField(TEXT("uid"), Uid);
+				RemoveMember(Uid);
 				InterpEngine.ClearUid(Uid);
 				OnUserLeft.Broadcast(Uid);
 				return;

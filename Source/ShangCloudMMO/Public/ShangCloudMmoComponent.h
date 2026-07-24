@@ -22,6 +22,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMmoServerClosed);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnMmoBroadcastReceived, const FString&, Uid, const FString&, Message, const FString&, Extra);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMmoSyncVarReceived, const FMmoSyncVarPayload&, Payload);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnMmoSyncVarInterpolated, const FString&, Uid, const FString&, VarName, double, Value);
+// 房间成员列表更新（__pong__ 响应后触发，参考 extension getMemberList）
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMmoMembersUpdated, int32, UserCount, const TArray<FMmoRoomMember>&, Members);
 
 UCLASS(ClassGroup=(Networking), meta=(BlueprintSpawnableComponent))
 class SHANGCLOUDMMO_API UShangCloudMmoComponent : public UActorComponent
@@ -85,6 +87,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "ShangCloud|MMO|Events")
 	FOnMmoSyncVarInterpolated OnSyncVarInterpolated;
 
+	/** 房间成员列表更新（收到 __pong__ 后触发）。 */
+	UPROPERTY(BlueprintAssignable, Category = "ShangCloud|MMO|Events")
+	FOnMmoMembersUpdated OnMembersUpdated;
+
 	/** Configures connection parameters from an API response. */
 	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
 	void ConfigureFromApiResponse(const FString& InConnectKey, const FString& InEdgeUrl, const FString& InProtocol);
@@ -122,6 +128,24 @@ public:
 	void SendJoinAnnouncement(const FString& Uid, const FString& Nickname);
 
 	/**
+	 * 查询房间成员列表。发送 __ping__，服务端以 __pong__:N:membersJSON 响应并更新本地缓存。
+	 * 结果通过 OnMembersUpdated 事件与 GetMemberList() 获取。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
+	void QueryMembers();
+
+	/**
+	 * 返回本地缓存的房间成员列表（参考 extension getMemberList）。
+	 * 由 __join__/__leave__/__pong__ 维护。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
+	TArray<FMmoRoomMember> GetMemberList() const;
+
+	/** 返回最近一次 __pong__ 的房间人数（无缓存时为成员列表长度）。 */
+	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
+	int32 GetRoomUserCount() const;
+
+	/**
 	 * 读取指定 uid 的同步变量当前值（插帧变量的 current，平滑后）。
 	 * 若该变量不在插帧集合或尚未建立状态，回退到最近原始值。
 	 */
@@ -145,7 +169,15 @@ private:
 	FMmoMessageQueue MessageQueue;
 	FMmoInterpEngine InterpEngine;
 
+	// 房间成员缓存（参考 extension 的 window._mmoMembers）
+	TArray<FMmoRoomMember> Members;
+	int32 RoomUserCount = 0;
+
 	void CleanupTransport();
 	void ProcessBusinessMessage(const FString& Message);
 	void ParseEdgeUrl(const FString& Url);
+	void ClearMembers();
+	void UpsertMember(const FString& Uid, const FString& Nickname);
+	void RemoveMember(const FString& Uid);
+	void ApplyMembersFromPong(const FString& MembersJson, int32 Count);
 };

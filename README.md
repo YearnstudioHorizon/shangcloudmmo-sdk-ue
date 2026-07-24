@@ -137,6 +137,50 @@ Callback.BindDynamic(this, &AMyActor::OnRoomJoined);
 ApiClient->JoinRoom(RoomId, TEXT("tcp"), Callback);
 ```
 
+### 4. 设备授权登录（Device Auth + PKCE，免 Secret）
+
+适用于游戏客户端等无法安全保存 `client_secret` 的场景。需在开发者中心开启应用的 **「允许公开客户端 PKCE」**。
+
+```cpp
+ApiClient->ClientId = TEXT("your_client_id");
+
+FOnApiDeviceUserCode OnUserCode;
+OnUserCode.BindDynamic(this, &AMyActor::OnDeviceUserCode);
+
+FOnApiOAuthToken OnToken;
+OnToken.BindDynamic(this, &AMyActor::OnDeviceLoginDone);
+
+// scope 传空则默认 openid profile mmo
+ApiClient->LoginWithDeviceAuth(TEXT("your_client_id"), TEXT("openid profile mmo"), OnUserCode, OnToken);
+
+// 取消轮询
+// ApiClient->CancelDeviceLogin();
+```
+
+```cpp
+void AMyActor::OnDeviceUserCode(const FString& UserCode, const FString& VerificationUri, const FString& VerificationUriComplete)
+{
+    UE_LOG(LogTemp, Log, TEXT("Open: %s"), *VerificationUriComplete);
+    UE_LOG(LogTemp, Log, TEXT("Or visit %s and enter: %s"), *VerificationUri, *UserCode);
+    FPlatformProcess::LaunchURL(*VerificationUriComplete, nullptr, nullptr);
+}
+
+void AMyActor::OnDeviceLoginDone(const FOAuthTokenResponse& Response, const FString& Error)
+{
+    if (!Error.IsEmpty())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Device login failed: %s"), *Error);
+        return;
+    }
+    // AccessToken / RefreshToken 已写入 ApiClient
+    UE_LOG(LogTemp, Log, TEXT("Logged in, expires_in=%d"), Response.ExpiresIn);
+}
+```
+
+也可使用 `RequestDeviceAuthorization` + `PollDeviceTokenOnce` 自行控制轮询；`RefreshAccessToken` 用于公开客户端续期。
+
+文档：https://doc.yearnstudio.cn/doc-9232484
+
 ## 蓝图使用
 
 所有 API 和组件均支持蓝图：
@@ -151,49 +195,55 @@ ApiClient->JoinRoom(RoomId, TEXT("tcp"), Callback);
 
 `UShangCloudApiClient` 是一个 `UObject`，所有接口均为异步回调模式。
 
-### 房间管理
+### MMO 房间 OpenAPI（完整）
+
+鉴权：`Authorization: {TokenType} {AccessToken}`，token 须含 `mmo` scope。  
+协议头：`X-MMO-Protoctl`（`tcp` / `websocket`）。房间头：`X-MMO-Room`。
+
+| 方法 | 路径 | SDK | 说明 |
+|------|------|-----|------|
+| POST | `/api/mmo/room/new` | `NewRoom` | 创建房间，调用者成为房主 |
+| POST | `/api/mmo/room/join` | `JoinRoom` | 加入房间，每次独立 `connect_key` |
+| POST | `/api/mmo/room/data/set` | `SetRoomData` | 设置额外数据（仅房主） |
+| POST | `/api/mmo/room/data/get` | `GetRoomData` | 获取全部额外数据 |
+| POST | `/api/mmo/room/data/delete` | `DeleteRoomData` | 删除指定键（仅房主） |
+| POST | `/api/mmo/room/kick` | `KickUser` | 踢人（仅房主，不能踢自己） |
+| POST | `/api/mmo/room/usercount` | `GetRoomUserCount` | 查询当前人数 |
+
+文档：创建 [475695436](https://doc.yearnstudio.cn/api-475695436) · 加入 [475695437](https://doc.yearnstudio.cn/api-475695437) · 设数据 [475695439](https://doc.yearnstudio.cn/api-475695439) · 取数据 [475695440](https://doc.yearnstudio.cn/api-475695440) · 删数据 [475695441](https://doc.yearnstudio.cn/api-475695441) · 踢人 [475695442](https://doc.yearnstudio.cn/api-475695442) · 人数 [475695443](https://doc.yearnstudio.cn/api-475695443)
 
 ```cpp
-// 创建房间，protocol 可选 "tcp" / "websocket"
-ApiClient->NewRoom(TEXT("tcp"), OnNewRoomCallback);
+// 创建房间 → ConnectKey / EdgeUrl / RoomId / Protocol
+ApiClient->NewRoom(TEXT("tcp"), OnNewRoom); // 或 "websocket"
 
-// 加入房间
-ApiClient->JoinRoom(RoomId, TEXT("tcp"), OnJoinRoomCallback);
+// 加入（一号多登时 Response.AssignedUid 可能有值）
+ApiClient->JoinRoom(RoomId, TEXT("websocket"), OnJoinRoom);
 
-// 设置房间配置（仅房主）
-ApiClient->SetRoomConfig(RoomId, false, OnSimpleCallback);
+// 额外数据：Type = number / string / boolean
+ApiClient->SetRoomData(RoomId, TEXT("max_players"), TEXT("8"), TEXT("number"), OnSimple);
+ApiClient->GetRoomData(RoomId, OnGetData);   // JsonData 为 extra_data 的 JSON 字符串
+ApiClient->DeleteRoomData(RoomId, TEXT("max_players"), OnSimple);
 
-// 踢出用户（仅房主）
-ApiClient->KickUser(RoomId, TEXT("12345"), OnSimpleCallback);
+// 踢人 + 查人数
+ApiClient->KickUser(RoomId, TEXT("12345"), OnSimple);
+ApiClient->GetRoomUserCount(RoomId, OnUserCount);
 
-// 查询房间人数
-ApiClient->GetRoomUserCount(RoomId, OnUserCountCallback);
-```
-
-### 房间数据（键值存储）
-
-```cpp
-// 设置数据（仅房主），Type 可选 "number" / "string" / "boolean"
-ApiClient->SetRoomData(RoomId, TEXT("score"), TEXT("100"), TEXT("number"), OnSimpleCallback);
-
-// 获取所有数据（返回 JSON 字符串）
-ApiClient->GetRoomData(RoomId, OnGetDataCallback);
-
-// 删除数据（仅房主）
-ApiClient->DeleteRoomData(RoomId, TEXT("score"), OnSimpleCallback);
+// 房间配置（allow_multi_login）
+ApiClient->SetRoomConfig(RoomId, false, OnSimple);
 ```
 
 ### 回调签名
 
 | 委托 | 参数 | 用于 |
 |------|------|------|
-| `FOnApiNewRoom` | `Response`, `Error` | NewRoom |
-| `FOnApiJoinRoom` | `Response`, `Error` | JoinRoom |
-| `FOnApiSimple` | `Error` | Config/Data/Kick |
+| `FOnApiNewRoom` | `FMmoNewRoomResponse`, `Error` | NewRoom |
+| `FOnApiJoinRoom` | `FMmoJoinRoomResponse`, `Error` | JoinRoom |
+| `FOnApiSimple` | `Error` | Config / SetRoomData / DeleteRoomData / Kick |
 | `FOnApiGetRoomData` | `JsonData`, `Error` | GetRoomData |
 | `FOnApiUserCount` | `UserCount`, `Error` | GetRoomUserCount |
+| `FOnApiOAuthToken` | `FOAuthTokenResponse`, `Error` | 设备登录 / 刷新 |
 
-`Error` 为空字符串表示成功。
+`Error` 为空字符串表示成功。HTTP 错误：`400` 参数 · `401` token · `403` 权限 · `404` 房间不存在。
 
 ### 同步变量负载结构
 

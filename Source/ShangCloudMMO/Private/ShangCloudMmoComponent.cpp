@@ -105,6 +105,7 @@ void UShangCloudMmoComponent::DisconnectFromEdge()
 	}
 	ConnectionState = EMmoConnectionState::Disconnected;
 	InterpEngine.Clear();
+	ClearOutgoingSyncVarCache();
 	ClearMembers();
 }
 
@@ -153,6 +154,13 @@ void UShangCloudMmoComponent::SendBroadcast(const FString& Uid, const FString& M
 	SendMessage(Out);
 }
 
+void UShangCloudMmoComponent::ClearOutgoingSyncVarCache()
+{
+	OutgoingSyncUid.Empty();
+	OutgoingSyncVars.Empty();
+	OutgoingSyncInterp.Empty();
+}
+
 void UShangCloudMmoComponent::SendSyncVar(const FString& Uid, const TMap<FString, FString>& Vars, const TArray<FString>& Interp)
 {
 	if (!Transport.IsValid() || Transport->GetState() != EMmoConnectionState::Connected)
@@ -161,21 +169,42 @@ void UShangCloudMmoComponent::SendSyncVar(const FString& Uid, const TMap<FString
 		return;
 	}
 
+	// uid 变化时重置发送侧缓存，避免把上一用户的缺省变量带过去
+	if (Uid != OutgoingSyncUid)
+	{
+		OutgoingSyncUid = Uid;
+		OutgoingSyncVars.Empty();
+		OutgoingSyncInterp.Empty();
+	}
+
+	// 缺省变量：以缓存为底，本次传入的键覆盖；未传入的键沿用上次值一并发送
+	for (const TTuple<FString, FString>& Pair : Vars)
+	{
+		OutgoingSyncVars.Add(Pair.Key, Pair.Value);
+	}
+	for (const FString& Name : Interp)
+	{
+		if (!Name.IsEmpty())
+		{
+			OutgoingSyncInterp.Add(Name);
+		}
+	}
+
 	// wire 格式（参考 core.js 的 __sync_var__）：{"type":"__sync_var__","uid","vars","interp"}
 	TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
 	Json->SetStringField(TEXT("type"), TEXT("__sync_var__"));
 	Json->SetStringField(TEXT("uid"), Uid);
 
 	TSharedPtr<FJsonObject> VarsJson = MakeShared<FJsonObject>();
-	for (const TTuple<FString, FString>& Pair : Vars)
+	for (const TTuple<FString, FString>& Pair : OutgoingSyncVars)
 	{
 		VarsJson->SetStringField(Pair.Key, Pair.Value);
 	}
 	Json->SetObjectField(TEXT("vars"), VarsJson);
 
 	TArray<TSharedPtr<FJsonValue>> InterpValues;
-	InterpValues.Reserve(Interp.Num());
-	for (const FString& Name : Interp)
+	InterpValues.Reserve(OutgoingSyncInterp.Num());
+	for (const FString& Name : OutgoingSyncInterp)
 	{
 		InterpValues.Add(MakeShared<FJsonValueString>(Name));
 	}
@@ -273,6 +302,7 @@ void UShangCloudMmoComponent::DrainTransportEvents()
 		case EPendingTransportEventKind::Disconnected:
 			ConnectionState = EMmoConnectionState::Disconnected;
 			ClearMembers();
+			ClearOutgoingSyncVarCache();
 			OnDisconnected.Broadcast();
 			break;
 		case EPendingTransportEventKind::Error:

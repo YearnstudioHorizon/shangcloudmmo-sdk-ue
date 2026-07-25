@@ -117,11 +117,16 @@ public:
 	/**
 	 * 发送同步变量。wire 格式（参考 core.js 的 __sync_var__）：
 	 * {"type":"__sync_var__","uid":"...","vars":{...},"interp":["x",...]}
+	 * 缺省变量处理：SDK 缓存本端最近一次完整 vars/interp，本次未传入的键自动补发上次值。
 	 * @param Vars   变量名→值（值会被转为字符串，与 core.js 一致）
 	 * @param Interp 需要接收端插帧平滑的变量名列表
 	 */
 	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
 	void SendSyncVar(const FString& Uid, const TMap<FString, FString>& Vars, const TArray<FString>& Interp);
+
+	/** 清空本端发送侧缺省变量缓存（断开连接时会自动调用）。 */
+	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
+	void ClearOutgoingSyncVarCache();
 
 	/** 发送加入房间通知。wire 格式：{"type":"__join__","uid":"...","nickname":"..."} */
 	UFUNCTION(BlueprintCallable, Category = "ShangCloud|MMO")
@@ -172,6 +177,11 @@ private:
 	// 房间成员缓存（参考 extension 的 window._mmoMembers）
 	TArray<FMmoRoomMember> Members;
 	int32 RoomUserCount = 0;
+
+	// 本端发送侧缺省变量缓存：未在本次 SendSyncVar 中出现的键自动沿用上次值
+	FString OutgoingSyncUid;
+	TMap<FString, FString> OutgoingSyncVars;
+	TSet<FString> OutgoingSyncInterp;
 
 	// 传输层事件可能在后台线程触发，入队后在 Tick 主线程派发
 	enum class EPendingTransportEventKind : uint8

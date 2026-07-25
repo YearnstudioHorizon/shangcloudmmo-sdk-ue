@@ -62,25 +62,22 @@ void UShangCloudMmoComponent::ConnectToEdge()
 
 	Transport->SetMessageQueue(&MessageQueue);
 
+	// 后台线程只入队，Tick 主线程再 Broadcast（可安全改 UI / Blueprint）
 	Transport->OnConnected.BindLambda([this]()
 	{
-		ConnectionState = EMmoConnectionState::Connected;
-		OnConnected.Broadcast();
+		EnqueueTransportEvent(EPendingTransportEventKind::Connected);
 	});
 	Transport->OnDisconnected.BindLambda([this]()
 	{
-		ConnectionState = EMmoConnectionState::Disconnected;
-		ClearMembers();
-		OnDisconnected.Broadcast();
+		EnqueueTransportEvent(EPendingTransportEventKind::Disconnected);
 	});
 	Transport->OnError.BindLambda([this](const FString& Error)
 	{
-		ConnectionState = EMmoConnectionState::Error;
-		OnConnectionError.Broadcast(Error);
+		EnqueueTransportEvent(EPendingTransportEventKind::Error, Error);
 	});
 	Transport->OnServerClosed.BindLambda([this]()
 	{
-		OnServerClosed.Broadcast();
+		EnqueueTransportEvent(EPendingTransportEventKind::ServerClosed);
 	});
 
 	if (Protocol == EMmoProtocol::WebSocket && !EdgeUrl.IsEmpty())
@@ -254,10 +251,48 @@ void UShangCloudMmoComponent::ClearSyncVarState(const FString& Uid)
 	InterpEngine.ClearUid(Uid);
 }
 
+void UShangCloudMmoComponent::EnqueueTransportEvent(EPendingTransportEventKind Kind, const FString& Error)
+{
+	FPendingTransportEvent Ev;
+	Ev.Kind = Kind;
+	Ev.Error = Error;
+	PendingTransportEvents.Enqueue(MoveTemp(Ev));
+}
+
+void UShangCloudMmoComponent::DrainTransportEvents()
+{
+	FPendingTransportEvent Ev;
+	while (PendingTransportEvents.Dequeue(Ev))
+	{
+		switch (Ev.Kind)
+		{
+		case EPendingTransportEventKind::Connected:
+			ConnectionState = EMmoConnectionState::Connected;
+			OnConnected.Broadcast();
+			break;
+		case EPendingTransportEventKind::Disconnected:
+			ConnectionState = EMmoConnectionState::Disconnected;
+			ClearMembers();
+			OnDisconnected.Broadcast();
+			break;
+		case EPendingTransportEventKind::Error:
+			ConnectionState = EMmoConnectionState::Error;
+			OnConnectionError.Broadcast(Ev.Error);
+			break;
+		case EPendingTransportEventKind::ServerClosed:
+			OnServerClosed.Broadcast();
+			break;
+		}
+	}
+}
+
 void UShangCloudMmoComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 	FActorComponentTickFunction* ThisTickFunction)
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+
+	// 先派发传输层事件（Connected/Error 等），保证回调在游戏线程
+	DrainTransportEvents();
 
 	// 先推进插帧引擎（收到 sync_var 后逐帧把 current → target）
 	TArray<FMmoInterpEngine::FChange> InterpChanges = InterpEngine.Tick(DeltaTime);

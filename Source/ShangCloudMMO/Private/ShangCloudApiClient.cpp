@@ -608,7 +608,15 @@ void UShangCloudApiClient::SendRequest(const FString& Path, const FString& JsonB
 	Request->SetURL(Url);
 	Request->SetVerb(TEXT("POST"));
 	Request->SetHeader(TEXT("Content-Type"), TEXT("application/json"));
-	Request->SetHeader(TEXT("Authorization"), FString::Printf(TEXT("%s %s"), *TokenType, *AccessToken));
+	// 仅发送 token 本身，不带 Bearer/TokenType（与 Unity 实测一致：服务端按裸 token 校验）
+	{
+		FString Token = AccessToken.TrimStartAndEnd();
+		if (Token.StartsWith(TEXT("Bearer "), ESearchCase::IgnoreCase))
+		{
+			Token = Token.RightChop(7).TrimStartAndEnd();
+		}
+		Request->SetHeader(TEXT("Authorization"), Token);
+	}
 
 	if (!RoomId.IsEmpty())
 	{

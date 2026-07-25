@@ -173,6 +173,21 @@ private:
 	TArray<FMmoRoomMember> Members;
 	int32 RoomUserCount = 0;
 
+	// 传输层事件可能在后台线程触发，入队后在 Tick 主线程派发
+	enum class EPendingTransportEventKind : uint8
+	{
+		Connected,
+		Disconnected,
+		Error,
+		ServerClosed,
+	};
+	struct FPendingTransportEvent
+	{
+		EPendingTransportEventKind Kind = EPendingTransportEventKind::Connected;
+		FString Error;
+	};
+	TQueue<FPendingTransportEvent, EQueueMode::Mpsc> PendingTransportEvents;
+
 	void CleanupTransport();
 	void ProcessBusinessMessage(const FString& Message);
 	void ParseEdgeUrl(const FString& Url);
@@ -180,4 +195,6 @@ private:
 	void UpsertMember(const FString& Uid, const FString& Nickname);
 	void RemoveMember(const FString& Uid);
 	void ApplyMembersFromPong(const FString& MembersJson, int32 Count);
+	void EnqueueTransportEvent(EPendingTransportEventKind Kind, const FString& Error = FString());
+	void DrainTransportEvents();
 };
